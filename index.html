@@ -6,6 +6,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#d81f2a">
+<link rel="manifest" href="manifest.json">
 <meta name="application-name" content="Gasoline">
 <meta name="apple-mobile-web-app-title" content="Gasoline">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1135,10 +1136,6 @@ const $=id=>document.getElementById(id);
 (function(){try{
   const add=(rel,extra)=>{const l=document.createElement('link');l.rel=rel;l.href=PNG_ICON;Object.assign(l,extra||{});document.head.appendChild(l);};
   add('icon',{type:'image/png'});add('apple-touch-icon',{});
-  const mani={name:'Gasoline — Fix Cash Advance',short_name:'Gasoline',display:'standalone',background_color:'#ffffff',theme_color:'#d81f2a',start_url:'.',icons:[{src:PNG_ICON,sizes:'512x512',type:'image/png'}]};
-  const ml=document.createElement('link');ml.rel='manifest';
-  ml.href=URL.createObjectURL(new Blob([JSON.stringify(mani)],{type:'application/manifest+json'}));
-  document.head.appendChild(ml);
 }catch(_){}})();
 function money(n){return (Number(n||0)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function fmtDate(iso){if(!iso)return '';const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);if(!m)return iso;return `${m[3]}-${m[2]}-${m[1].slice(2)}`;}
@@ -2280,14 +2277,32 @@ function mergeEmployee(le,ce){
 }
 function empFolderName(e){const p=(e&&e.prof)||{};const nm=(p.name||'').trim()||'Employee';const c=(p.code||'').trim();return c?(nm+' ('+c+')'):nm;}
 function syncStatus(msg,silent){const el=$('syncStatus');if(el)el.textContent=msg;if(!silent)toast(msg);}
-function jsonpSync(params){return new Promise((res,rej)=>{
-  const cb='__sc'+Date.now()+Math.floor(Math.random()*1e6);const s=document.createElement('script');let done=false;
-  function clean(){try{delete window[cb];}catch(_){window[cb]=undefined;}if(s.parentNode)s.parentNode.removeChild(s);}
-  window[cb]=d=>{done=true;clean();res(d);};
-  const base=profile.exportUrl;const q=new URLSearchParams(Object.assign({},params,{callback:cb})).toString();
-  s.src=base+(base.indexOf('?')>=0?'&':'?')+q;
-  s.onerror=()=>{if(!done){clean();rej(new Error('network'));}};
-  document.body.appendChild(s);setTimeout(()=>{if(!done){clean();rej(new Error('timeout'));}},30000);
+function syncError(code,message){const err=new Error(message);err.code=code;return err;}
+function validatedAppsScriptExecUrl(value){
+  let url;
+  try{url=new URL(String(value||'').trim());}catch(_){throw syncError('invalid-url','Apps Script URL ไม่ถูกต้อง');}
+  if(url.protocol!=='https:'||url.hostname!=='script.google.com'||!/\/macros\/s\/[^/]+\/exec$/.test(url.pathname))throw syncError('invalid-url','ต้องใช้ Google Apps Script Web App URL ที่ลงท้ายด้วย /exec');
+  // Preserve deployment URL and its existing query, but never include it in errors/logs.
+  return url;
+}
+function jsonpSync(params,options={}){return new Promise((resolve,reject)=>{
+  let settled=false,timer=null,script=null;
+  const callback='__gslJsonp_'+Date.now()+'_'+Math.floor(Math.random()*1e9),timeoutMs=Math.max(1000,Number(options.timeoutMs)||30000);
+  function cleanup(){if(timer!==null){clearTimeout(timer);timer=null;}if(script){script.onerror=script.onload=null;if(script.parentNode)script.parentNode.removeChild(script);script=null;}try{delete window[callback];}catch(_){window[callback]=undefined;}}
+  function finish(ok,value){if(settled)return;settled=true;cleanup();ok?resolve(value):reject(value);}
+  let url;
+  try{url=validatedAppsScriptExecUrl(profile.exportUrl);}catch(err){finish(false,err);return;}
+  window[callback]=data=>{
+    if(!data||typeof data!=='object'||Array.isArray(data)||typeof data.ok!=='boolean'){finish(false,syncError('invalid-response','Apps Script ตอบกลับไม่ถูกต้อง'));return;}
+    finish(true,data);
+  };
+  script=document.createElement('script');script.async=true;script.referrerPolicy='no-referrer';
+  const safeParams=Object.assign({},params,{callback:callback});
+  Object.keys(safeParams).forEach(key=>{const value=safeParams[key];if(value!==undefined&&value!==null)url.searchParams.set(key,String(value));});
+  script.src=url.toString();
+  script.onerror=()=>finish(false,syncError('network','เชื่อมต่อ Apps Script ไม่สำเร็จ'));
+  timer=setTimeout(()=>finish(false,syncError('timeout','Apps Script ไม่ตอบกลับภายในเวลาที่กำหนด')),timeoutMs);
+  document.head.appendChild(script);
 });}
 function rcptAll(){return tx('receipts','readonly').then(s=>new Promise((res,rej)=>{const out=[];const r=s.openCursor();
   r.onsuccess=e=>{const c=e.target.result;if(c){out.push(c.value);c.continue();}else res(out);};r.onerror=()=>rej(r.error);}));}
@@ -2314,10 +2329,18 @@ async function gsSyncPush(silent,replace){
       await new Promise(res=>setTimeout(res,180));
     }
     // 2) ส่งฐานข้อมูล (พนักงาน/เดือน/รายการ/หัวตาราง) — ไม่รวม blob
-    await fetch(profile.exportUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},
+    await fetch(validatedAppsScriptExecUrl(profile.exportUrl).toString(),{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},
       body:JSON.stringify({action:'syncpush',replace:!!replace,gset,employees})});
-    syncStatus((replace?'เขียนทับคลาวด์แล้ว ':'ซิงค์ขึ้นคลาวด์แล้ว ')+new Date().toLocaleTimeString(),silent);
-  }catch(e){console.error(e);if(!silent)syncStatus('ส่งข้อมูลไม่สำเร็จ — ตรวจการ Deploy Code.gs ใหม่ · '+(e.message||e));}
+    if(!silent)syncStatus('ส่งคำขอแล้ว · กำลังตรวจสอบผล…');
+    await new Promise(resolve=>setTimeout(resolve,900));
+    const verify=await jsonpSync({action:'syncpull',t:Date.now()});
+    if(!verify||verify.ok!==true||!Array.isArray(verify.employees))throw syncError('invalid-response','ยืนยันผลหลัง Push ไม่สำเร็จ');
+    const localKeys=new Set(employees.map(empKey));
+    const verifiedKeys=new Set(verify.employees.map(empKey));
+    const missing=[...localKeys].filter(k=>!verifiedKeys.has(k));
+    if(missing.length)throw syncError('verification-failed','ข้อมูลบนคลาวด์ยังไม่ครบหลัง Push');
+    syncStatus((replace?'ยืนยันการเขียนทับคลาวด์แล้ว ':'ยืนยันการซิงค์ขึ้นคลาวด์แล้ว ')+new Date().toLocaleTimeString(),silent);
+  }catch(e){console.error('syncpush',e&&e.code?e.code:'error');if(!silent)syncStatus('ส่งหรือยืนยันข้อมูลไม่สำเร็จ · '+(e&&e.message?e.message:'error'));}
   finally{_syncBusy=false;}
 }
 
@@ -2349,9 +2372,10 @@ async function gsSyncPull(silent,mode){
     }
     activateEmp(activeEmpId);render();
     syncStatus('ซิงค์สำเร็จ · พนักงาน '+employees.length+' คน'+(dl?(' · ใบเสร็จใหม่ '+dl):'')+' · '+new Date().toLocaleTimeString(),silent);
-  }catch(e){console.error(e);
+  }catch(e){console.error('syncpull',e&&e.code?e.code:'error');
     if(!silent){
-      syncStatus('เชื่อมต่อคลาวด์ไม่ได้');
+      const labels={'invalid-url':'URL Apps Script ไม่ถูกต้อง','network':'เชื่อมต่อ Apps Script ไม่สำเร็จ','timeout':'Apps Script ตอบกลับช้าเกินกำหนด','invalid-response':'ข้อมูลตอบกลับจาก Apps Script ไม่ถูกต้อง'};
+      syncStatus(labels[e&&e.code]||'เชื่อมต่อคลาวด์ไม่ได้');
       alert('ดึงข้อมูลจากคลาวด์ไม่สำเร็จ\n\nสาเหตุที่พบบ่อย:\n• ยังไม่ได้ Deploy Code.gs เวอร์ชันใหม่ (ที่มีระบบซิงค์)\n   → Apps Script: Deploy → Manage deployments → ✏️ แก้ไข → Version = New version → Deploy\n   (ต้องเป็น New version ของอันเดิม ไม่ใช่ New deployment ที่ได้ URL ใหม่)\n• สิทธิ์ Web app ไม่ใช่ "Anyone"\n\nตรวจให้ชัด: เปิดลิงก์นี้ในเบราว์เซอร์\n'+profile.exportUrl+'?action=syncpull\n→ เห็น {"ok":true,...} = พร้อมใช้\n→ เห็น "Gasoline endpoint OK" = Code.gs ยังเป็นเวอร์ชันเก่า\n→ เจอหน้า login/ขอสิทธิ์ = สิทธิ์ไม่ใช่ Anyone');
     }
   }
