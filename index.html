@@ -617,6 +617,7 @@ table.led tr.after-total-row-2 td{
       <div class="cd-example"><span>💡</span><span>ตัวอย่าง: <b>KCE-E</b> = <b>60 km</b> หรือ <b>KCE-E,Olympic</b> = <b>245 km</b></span></div>
     </section>
     <div class="row"><div><label>ลิงก์ Google Sheet (Apps Script /exec) — สำหรับส่งออก/ซิงค์</label><input id="pExportUrl" placeholder="https://script.google.com/macros/s/.../exec"></div></div>
+    <div class="row"><div><label>รหัสซิงค์ (SYNC_SECRET) — เก็บเฉพาะในอุปกรณ์นี้</label><input id="pSyncToken" type="password" autocomplete="off" placeholder="กรอก SYNC_SECRET"></div></div>
     <div class="row"><div>
       <button class="btn btn-blue btn-sm" id="btnSyncNow" type="button">🔄 ซิงค์ตอนนี้ (ดึง + ส่ง)</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -1593,7 +1594,7 @@ function openProfile(){
   $('pZone').value=profile.zone;$('pPlate').value=profile.plate;$('pCur').value=profile.currency;
   $('pFix').value=profile.fix;$('pFixDate').value=profile.fixDate||'';$('pDoc').value=profile.docNo;
   $('pApprove').value=profile.approve;$('pVerify').value=profile.verify;
-  $('pExportUrl').value=profile.exportUrl||'';cList();renderCD();
+  $('pExportUrl').value=profile.exportUrl||'';$('pSyncToken').value=localStorage.getItem('gasoline_sync_token')||'';cList();renderCD();
   const h=cur.head||{};
   $('pBalDate').value=h.balDate||'';$('pBalAmount').value=(h.balAmount||h.balAmount===0)?h.balAmount:'';
   $('pReimbDate').value=h.reimbDate||'';
@@ -1636,7 +1637,7 @@ $('pSave').addEventListener('click',async()=>{
   profile.zone=$('pZone').value.trim();profile.plate=$('pPlate').value.trim();profile.currency=$('pCur').value.trim()||'THB';
   profile.fix=parseFloat($('pFix').value)||0;profile.fixDate=$('pFixDate').value||'';profile.docNo=parseInt($('pDoc').value)||1;
   profile.approve=$('pApprove').value.trim();profile.verify=$('pVerify').value.trim();
-  profile.exportUrl=$('pExportUrl').value.trim();profile.customerDistances=collectCD();
+  profile.exportUrl=$('pExportUrl').value.trim();localStorage.setItem('gasoline_sync_token',$('pSyncToken').value.trim());profile.customerDistances=collectCD();
   // Balance belongs to the current month's stored head (Reimbursement is edited on the main page; Total date is auto)
   if(!cur.head)cur.head={};
   cur.head.balDate=$('pBalDate').value||'';cur.head.balAmount=parseFloat($('pBalAmount').value)||0;
@@ -2216,8 +2217,7 @@ async function gsExport(){
   const btn=$('btnExportSheet'); if(btn){btn.disabled=true;btn.textContent='⏳ กำลังส่ง…';}
   toast('กำลังส่งขึ้น Google Sheet…');
   try{
-    await fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify({action:'exportemployee',data:payload})});
+    await callGas({action:'exportemployee',data:payload});
     toast('✓ ส่งขึ้น Google Sheet แล้ว — แท็บ “'+payload.sheetName+'” ('+monthsOut.length+' เดือน)');
   }catch(err){ console.error(err); toast('⚠️ ส่งไม่สำเร็จ: '+(err.message||err)); }
   finally{ if(btn){btn.disabled=false;btn.textContent='📤 ส่งออกพนักงานนี้ขึ้น Google Sheet';} }
@@ -2282,28 +2282,31 @@ function validatedAppsScriptExecUrl(value){
   let url;
   try{url=new URL(String(value||'').trim());}catch(_){throw syncError('invalid-url','Apps Script URL ไม่ถูกต้อง');}
   if(url.protocol!=='https:'||url.hostname!=='script.google.com'||!/\/macros\/s\/[^/]+\/exec$/.test(url.pathname))throw syncError('invalid-url','ต้องใช้ Google Apps Script Web App URL ที่ลงท้ายด้วย /exec');
-  // Preserve deployment URL and its existing query, but never include it in errors/logs.
   return url;
 }
-function jsonpSync(params,options={}){return new Promise((resolve,reject)=>{
-  let settled=false,timer=null,script=null;
-  const callback='__gslJsonp_'+Date.now()+'_'+Math.floor(Math.random()*1e9),timeoutMs=Math.max(1000,Number(options.timeoutMs)||30000);
-  function cleanup(){if(timer!==null){clearTimeout(timer);timer=null;}if(script){script.onerror=script.onload=null;if(script.parentNode)script.parentNode.removeChild(script);script=null;}try{delete window[callback];}catch(_){window[callback]=undefined;}}
-  function finish(ok,value){if(settled)return;settled=true;cleanup();ok?resolve(value):reject(value);}
-  let url;
-  try{url=validatedAppsScriptExecUrl(profile.exportUrl);}catch(err){finish(false,err);return;}
-  window[callback]=data=>{
-    if(!data||typeof data!=='object'||Array.isArray(data)||typeof data.ok!=='boolean'){finish(false,syncError('invalid-response','Apps Script ตอบกลับไม่ถูกต้อง'));return;}
-    finish(true,data);
-  };
-  script=document.createElement('script');script.async=true;script.referrerPolicy='no-referrer';
-  const safeParams=Object.assign({},params,{callback:callback});
-  Object.keys(safeParams).forEach(key=>{const value=safeParams[key];if(value!==undefined&&value!==null)url.searchParams.set(key,String(value));});
-  script.src=url.toString();
-  script.onerror=()=>finish(false,syncError('network','เชื่อมต่อ Apps Script ไม่สำเร็จ'));
-  timer=setTimeout(()=>finish(false,syncError('timeout','Apps Script ไม่ตอบกลับภายในเวลาที่กำหนด')),timeoutMs);
-  document.head.appendChild(script);
-});}
+function syncToken_(){
+  const token=(localStorage.getItem('gasoline_sync_token')||'').trim();
+  if(!token)throw syncError('missing-token','กรุณากรอก SYNC_SECRET ในหน้าตั้งค่า');
+  return token;
+}
+async function callGas(params,options={}){
+  const url=validatedAppsScriptExecUrl(profile.exportUrl||DEFAULT_EXPORT_URL).toString();
+  const controller=new AbortController();
+  const timeoutMs=Math.max(1000,Number(options.timeoutMs)||60000);
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  let text,data;
+  try{
+    const response=await fetch(url,{method:'POST',redirect:'follow',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(Object.assign({},params,{token:syncToken_()})),signal:controller.signal});
+    text=await response.text();
+  }catch(err){
+    if(err&&err.name==='AbortError')throw syncError('timeout','Apps Script ไม่ตอบกลับภายในเวลาที่กำหนด');
+    throw syncError('network','เชื่อมต่อ Apps Script ไม่สำเร็จ');
+  }finally{clearTimeout(timer);}
+  try{data=JSON.parse(text);}catch(_){throw syncError('invalid-response','Apps Script ตอบกลับไม่ใช่ JSON');}
+  if(!data||typeof data!=='object'||Array.isArray(data)||typeof data.ok!=='boolean')throw syncError('invalid-response','Apps Script ตอบกลับไม่ถูกต้อง');
+  if(!data.ok)throw syncError(String(data.code||'request-failed'),String(data.error||'Apps Script request failed'));
+  return data;
+}
 function rcptAll(){return tx('receipts','readonly').then(s=>new Promise((res,rej)=>{const out=[];const r=s.openCursor();
   r.onsuccess=e=>{const c=e.target.result;if(c){out.push(c.value);c.continue();}else res(out);};r.onerror=()=>rej(r.error);}));}
 function blobToB64(blob){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=()=>rej(r.error);r.readAsDataURL(blob);});}
@@ -2323,17 +2326,15 @@ async function gsSyncPush(silent,replace){
     for(const r of all){
       if(r.synced||!r.blob)continue;
       const b64=await blobToB64(r.blob);
-      await fetch(profile.exportUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},
-        body:JSON.stringify({action:'uploadrcpt',id:r.id,folder:folderOfMonth[r.monthId]||'',mime:r.mime||'image/jpeg',name:r.name||r.id,b64})});
+      await callGas({action:'uploadrcpt',id:r.id,folder:folderOfMonth[r.monthId]||'',mime:r.mime||'image/jpeg',name:r.name||r.id,b64},{timeoutMs:120000});
       r.synced=true;await rcptPut(r);
       await new Promise(res=>setTimeout(res,180));
     }
     // 2) ส่งฐานข้อมูล (พนักงาน/เดือน/รายการ/หัวตาราง) — ไม่รวม blob
-    await fetch(validatedAppsScriptExecUrl(profile.exportUrl).toString(),{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify({action:'syncpush',replace:!!replace,gset,employees})});
+    await callGas({action:'syncpush',replace:!!replace,gset,employees},{timeoutMs:120000});
     if(!silent)syncStatus('ส่งคำขอแล้ว · กำลังตรวจสอบผล…');
     await new Promise(resolve=>setTimeout(resolve,900));
-    const verify=await jsonpSync({action:'syncpull',t:Date.now()});
+    const verify=await callGas({action:'syncpull'});
     if(!verify||verify.ok!==true||!Array.isArray(verify.employees))throw syncError('invalid-response','ยืนยันผลหลัง Push ไม่สำเร็จ');
     const localKeys=new Set(employees.map(empKey));
     const verifiedKeys=new Set(verify.employees.map(empKey));
@@ -2348,7 +2349,7 @@ async function gsSyncPull(silent,mode){
   if(!gsReady())return;if(!silent)syncStatus(mode==='replace'?'กำลังดึงข้อมูลมาแทนที่…':'กำลังดึงข้อมูลจากคลาวด์…');
   try{
     syncActiveBack();
-    const data=await jsonpSync({action:'syncpull',t:Date.now()});
+    const data=await callGas({action:'syncpull'});
     if(!data||!data.ok||!Array.isArray(data.employees)){if(!silent)syncStatus((data&&data.error)?('คลาวด์แจ้ง: '+data.error):'ยังไม่มีข้อมูลบนคลาวด์ — ไปกด 🔄 บนเครื่องที่มีข้อมูล (เช่นมือถือ) ก่อน');return;}
     // จับคู่ด้วยรหัสพนักงาน · ปกติ "รวมระดับรายการ" (ไม่ลบของใหม่) · mode replace = เอาคลาวด์แทนที่
     const actKey=empKey(employees.find(e=>e.id===activeEmpId)||employees[0]||{});
@@ -2366,7 +2367,7 @@ async function gsSyncPull(silent,mode){
     for(const id of ids){
       let have=null;try{have=await rcptGet(id);}catch(_){have=null;}
       if(have)continue;
-      const rd=await jsonpSync({action:'getrcpt',id,folder:rmap[id].folder,t:Date.now()});
+      const rd=await callGas({action:'getrcpt',id,folder:rmap[id].folder},{timeoutMs:120000});
       if(rd&&rd.ok&&rd.b64){const blob=b64ToBlob(rd.b64,rd.mime);let dim={w:0,h:0};try{dim=await imgDims(blob);}catch(_){}
         await rcptPut({id,monthId:rmap[id].monthId,entryId:rmap[id].entryId,name:rd.name||id,mime:rd.mime||'image/jpeg',blob,w:dim.w,h:dim.h,mode:'auto',synced:true,addedAt:Date.now()});dl++;}
     }
@@ -2374,9 +2375,9 @@ async function gsSyncPull(silent,mode){
     syncStatus('ซิงค์สำเร็จ · พนักงาน '+employees.length+' คน'+(dl?(' · ใบเสร็จใหม่ '+dl):'')+' · '+new Date().toLocaleTimeString(),silent);
   }catch(e){console.error('syncpull',e&&e.code?e.code:'error');
     if(!silent){
-      const labels={'invalid-url':'URL Apps Script ไม่ถูกต้อง','network':'เชื่อมต่อ Apps Script ไม่สำเร็จ','timeout':'Apps Script ตอบกลับช้าเกินกำหนด','invalid-response':'ข้อมูลตอบกลับจาก Apps Script ไม่ถูกต้อง'};
+      const labels={'invalid-url':'URL Apps Script ไม่ถูกต้อง','network':'เชื่อมต่อ Apps Script ไม่สำเร็จ','timeout':'Apps Script ตอบกลับช้าเกินกำหนด','invalid-response':'ข้อมูลตอบกลับจาก Apps Script ไม่ถูกต้อง','missing-token':'กรุณากรอก SYNC_SECRET ในหน้าตั้งค่า'};
       syncStatus(labels[e&&e.code]||'เชื่อมต่อคลาวด์ไม่ได้');
-      alert('ดึงข้อมูลจากคลาวด์ไม่สำเร็จ\n\nสาเหตุที่พบบ่อย:\n• ยังไม่ได้ Deploy Code.gs เวอร์ชันใหม่ (ที่มีระบบซิงค์)\n   → Apps Script: Deploy → Manage deployments → ✏️ แก้ไข → Version = New version → Deploy\n   (ต้องเป็น New version ของอันเดิม ไม่ใช่ New deployment ที่ได้ URL ใหม่)\n• สิทธิ์ Web app ไม่ใช่ "Anyone"\n\nตรวจให้ชัด: เปิดลิงก์นี้ในเบราว์เซอร์\n'+profile.exportUrl+'?action=syncpull\n→ เห็น {"ok":true,...} = พร้อมใช้\n→ เห็น "Gasoline endpoint OK" = Code.gs ยังเป็นเวอร์ชันเก่า\n→ เจอหน้า login/ขอสิทธิ์ = สิทธิ์ไม่ใช่ Anyone');
+      alert('ดึงข้อมูลจากคลาวด์ไม่สำเร็จ\n\nสาเหตุที่พบบ่อย:\n• ยังไม่ได้ Deploy Code.gs เวอร์ชันใหม่ (ที่มีระบบซิงค์)\n   → Apps Script: Deploy → Manage deployments → ✏️ แก้ไข → Version = New version → Deploy\n   (ต้องเป็น New version ของอันเดิม ไม่ใช่ New deployment ที่ได้ URL ใหม่)\n• สิทธิ์ Web app ไม่ใช่ "Anyone"\n\nตรวจให้ชัด: เปิดลิงก์นี้ในเบราว์เซอร์\n'+profile.exportUrl\n→ เห็น {"ok":true,...} = พร้อมใช้\n→ เห็น "Gasoline endpoint OK" = Code.gs ยังเป็นเวอร์ชันเก่า\n→ เจอหน้า login/ขอสิทธิ์ = สิทธิ์ไม่ใช่ Anyone');
     }
   }
 }
