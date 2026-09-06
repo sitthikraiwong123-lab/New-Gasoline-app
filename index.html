@@ -617,7 +617,7 @@ table.led tr.after-total-row-2 td{
       <div class="cd-example"><span>💡</span><span>ตัวอย่าง: <b>KCE-E</b> = <b>60 km</b> หรือ <b>KCE-E,Olympic</b> = <b>245 km</b></span></div>
     </section>
     <div class="row"><div><label>ลิงก์ Google Sheet (Apps Script /exec) — สำหรับส่งออก/ซิงค์</label><input id="pExportUrl" placeholder="https://script.google.com/macros/s/.../exec"></div></div>
-    <div class="row"><div><label>รหัสซิงค์ (SYNC_SECRET) — บันทึกเฉพาะอุปกรณ์นี้</label><input id="pSyncToken" type="password" autocomplete="off" placeholder="กรอกค่าเดียวกับ Script Property: SYNC_SECRET"></div></div>
+    <div class="row"><div><label>รหัสซิงค์ (SYNC_SECRET) — ตั้งจากเครื่องหลักแล้วแชร์ใช้ได้ทุกอุปกรณ์</label><input id="pSyncToken" type="password" autocomplete="off" placeholder="กรอกค่าเดียวกับ Script Property: SYNC_SECRET"><button class="btn" id="btnShareSync" type="button" style="margin-top:8px;width:100%">🔗 คัดลอกลิงก์เชื่อมต่อทุกอุปกรณ์</button><div style="font-size:11px;color:var(--mute);margin-top:6px">อุปกรณ์อื่นเปิดลิงก์นี้ 1 ครั้ง ระบบจะบันทึก Apps Script URL และ SYNC_SECRET แล้วเชื่อมต่ออัตโนมัติ</div></div></div>
     <div class="row"><div>
       <button class="btn btn-blue btn-sm" id="btnSyncNow" type="button">🔄 ซิงค์ตอนนี้ (ดึง + ส่ง)</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -1588,6 +1588,39 @@ async function bulkCustomers(){
   toast('เพิ่มใหม่ '+added+' วัน · อัปเดตซ้ำ '+updated+' วัน');
 }
 $('btnAddCustomerDistance').onclick=()=>addCD();$('fabImportCustomers').onclick=()=>{closeFabMenu();$('pBulkCustomers').value='';$('bulkCustomerModal').classList.add('open');setTimeout(()=>$('pBulkCustomers').focus(),50)};$('bulkClose').onclick=()=> $('bulkCustomerModal').classList.remove('open');$('btnApplyBulkCustomers').onclick=bulkCustomers;
+/* ---------------- Shared sync connection ---------------- */
+function b64urlEncode_(value){
+  const bytes=new TextEncoder().encode(String(value||''));let bin='';bytes.forEach(b=>bin+=String.fromCharCode(b));
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64urlDecode_(value){
+  let v=String(value||'').replace(/-/g,'+').replace(/_/g,'/');while(v.length%4)v+='=';
+  const bin=atob(v),bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));return new TextDecoder().decode(bytes);
+}
+function makeSharedSyncLink_(){
+  const token=($('pSyncToken').value||'').trim(),url=($('pExportUrl').value||'').trim();
+  if(!token){alert('กรุณากรอก SYNC_SECRET ก่อนสร้างลิงก์');return '';}
+  try{validatedAppsScriptExecUrl(url);}catch(err){alert(err.message||err);return '';}
+  return location.href.split('#')[0]+'#sync='+b64urlEncode_(JSON.stringify({v:1,url:url,token:token}));
+}
+async function copySharedSyncLink_(){
+  const link=makeSharedSyncLink_();if(!link)return;
+  try{await navigator.clipboard.writeText(link);toast('คัดลอกลิงก์เชื่อมต่อแล้ว');}
+  catch(_){prompt('คัดลอกลิงก์นี้ไปเปิดบนอุปกรณ์อื่น',link);}
+}
+function readSharedSyncConfig_(){
+  const m=location.hash.match(/(?:^#|&)sync=([^&]+)/);if(!m)return null;
+  try{
+    const cfg=JSON.parse(b64urlDecode_(decodeURIComponent(m[1])));
+    if(!cfg||cfg.v!==1||!cfg.token)throw new Error('ข้อมูลเชื่อมต่อไม่ครบ');
+    validatedAppsScriptExecUrl(cfg.url);
+    localStorage.setItem('gasoline_sync_token',String(cfg.token).trim());
+    localStorage.setItem('gasoline_sync_url',String(cfg.url).trim());
+    history.replaceState(null,'',location.href.split('#')[0]);
+    return cfg;
+  }catch(err){console.error(err);alert('ลิงก์เชื่อมต่อไม่ถูกต้อง: '+(err.message||err));return null;}
+}
+const _sharedSyncConfig=readSharedSyncConfig_();
 /* ---------------- Profile modal ---------------- */
 function openProfile(){
   $('pCompany').value=profile.company;$('pName').value=profile.name;$('pCode').value=profile.code;
@@ -1605,6 +1638,7 @@ function openProfile(){
 $('btnProfile').addEventListener('click',()=>{closeFabMenu();openProfile();});
 $('pCancel').addEventListener('click',()=>$('profileModal').classList.remove('open'));
 $('pClose').addEventListener('click',()=>$('profileModal').classList.remove('open'));
+$('btnShareSync').addEventListener('click',copySharedSyncLink_);
 $('btnBackup').addEventListener('click',()=>{
   syncActiveBack();
   const data={v:2,ts:Date.now(),employees,gset,activeEmpId};
@@ -2400,9 +2434,15 @@ $('zoom').addEventListener('click',()=>$('zoom').classList.remove('open'));
 /* ---------------- init ---------------- */
 i18nRemember(); applyLanguage(appLang);
 (async function(){
-  try{await load();render();
+  try{await load();
+    const sharedUrl=(_sharedSyncConfig&&_sharedSyncConfig.url)||localStorage.getItem('gasoline_sync_url')||'';
+    if(sharedUrl){
+      try{validatedAppsScriptExecUrl(sharedUrl);profile.exportUrl=sharedUrl;gset.exportUrl=sharedUrl;await saveDB();}
+      catch(err){console.error(err);}
+    }
+    render();
     _ready=true;
-    if(gsReady())gsSyncPull(true);                 // ดึงข้อมูลล่าสุดอัตโนมัติตอนเปิด (เงียบ)
+    if(gsReady()&&localStorage.getItem('gasoline_sync_token'))gsSyncPull(true);                 // ดึงข้อมูลล่าสุดอัตโนมัติตอนเปิด (เงียบ)
     document.addEventListener('visibilitychange',()=>{
       if(!gsReady())return;
       if(document.visibilityState==='visible')gsSyncPull(true);   // กลับเข้าแอป → ดึงล่าสุด
