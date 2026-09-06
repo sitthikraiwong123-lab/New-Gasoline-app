@@ -617,7 +617,7 @@ table.led tr.after-total-row-2 td{
       <div class="cd-example"><span>💡</span><span>ตัวอย่าง: <b>KCE-E</b> = <b>60 km</b> หรือ <b>KCE-E,Olympic</b> = <b>245 km</b></span></div>
     </section>
     <div class="row"><div><label>ลิงก์ Google Sheet (Apps Script /exec) — สำหรับส่งออก/ซิงค์</label><input id="pExportUrl" placeholder="https://script.google.com/macros/s/.../exec"></div></div>
-    <div class="row"><div><label>รหัสซิงค์ (SYNC_SECRET) — ตั้งจากเครื่องหลักแล้วแชร์ใช้ได้ทุกอุปกรณ์</label><input id="pSyncToken" type="password" autocomplete="off" placeholder="กรอกค่าเดียวกับ Script Property: SYNC_SECRET"><button class="btn" id="btnShareSync" type="button" style="margin-top:8px;width:100%">🔗 คัดลอกลิงก์เชื่อมต่อทุกอุปกรณ์</button><div style="font-size:11px;color:var(--mute);margin-top:6px">อุปกรณ์อื่นเปิดลิงก์นี้ 1 ครั้ง ระบบจะบันทึก Apps Script URL และ SYNC_SECRET แล้วเชื่อมต่ออัตโนมัติ</div></div></div>
+    <div class="row"><div><label>รหัสซิงค์ (SYNC_SECRET) — บันทึกเฉพาะอุปกรณ์นี้</label><input id="pSyncToken" type="password" autocomplete="off" placeholder="กรอกค่าเดียวกับ Script Property: SYNC_SECRET"></div></div>
     <div class="row"><div>
       <button class="btn btn-blue btn-sm" id="btnSyncNow" type="button">🔄 ซิงค์ตอนนี้ (ดึง + ส่ง)</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -1274,6 +1274,7 @@ function syncActiveBack(){
 function activateEmp(id){
   const e=employees.find(x=>x.id===id)||employees[0]; if(!e)return;
   activeEmpId=e.id; e.prof=e.prof||{};
+  if(e.prof.code)e.prof.code=String(e.prof.code).trim().toUpperCase();
   profile=Object.assign({},gset); EMP_FIELDS.forEach(f=>profile[f]=e.prof[f]);
   if(profile.fix==null)profile.fix=10000;
   profile.totalAmount=Number(profile.fix)||0; profile.totalDate=profile.totalDate||'';
@@ -1450,8 +1451,21 @@ function render(){
     esel.value=activeEmpId;}
   // month select
   const sel=$('monthSelect');sel.innerHTML='';
-  monthOrder.forEach(id=>{const o=document.createElement('option');o.value=id;o.textContent=months[id].label+(months[id].archived?' (ปิดแล้ว)':'');sel.appendChild(o);});
-  sel.value=cur.id;
+  monthOrder.forEach(id=>{const m=months[id];if(!m)return;const o=document.createElement('option');o.value=id;o.textContent=m.label+(m.archived?' (ปิดแล้ว)':'');sel.appendChild(o);});
+  if(!cur){
+    const o=document.createElement('option');o.value='';o.textContent='ยังไม่มีข้อมูลเดือน';o.selected=true;sel.appendChild(o);
+    sel.disabled=true;
+    $('archTag').innerHTML='';
+    $('profileLine').textContent=profile.company+' · '+profile.name+' ('+String(profile.code||'').toUpperCase()+')-'+profile.zone+' · รถ '+(profile.plate||'');
+    $('curLbl').textContent=profile.currency||'THB';
+    $('summaryBox').innerHTML='<div class="empty">พนักงานนี้ยังไม่มีข้อมูลเดือน กรุณากด “+ เดือนใหม่” เพื่อเริ่มต้น</div>';
+    $('entryList').innerHTML='<div class="empty">ยังไม่มีรายการ</div>';
+    ['btnRenameMonth','btnCloseMonth'].forEach(id=>{const b=$(id);if(b)b.disabled=true;});
+    requestAnimationFrame(()=>applyLanguage(appLang));
+    return;
+  }
+  sel.disabled=false;sel.value=cur.id;
+  ['btnRenameMonth','btnCloseMonth'].forEach(id=>{const b=$(id);if(b)b.disabled=false;});
   $('archTag').innerHTML=cur.archived?'<span class="archived-tag">ปิดเดือนแล้ว · ลบใบเสร็จแล้ว</span>':'';
   $('profileLine').textContent=profile.company+' · '+profile.name+' ('+profile.code+')-'+profile.zone+' · รถ '+profile.plate;
   $('curLbl').textContent=profile.currency;
@@ -1588,39 +1602,6 @@ async function bulkCustomers(){
   toast('เพิ่มใหม่ '+added+' วัน · อัปเดตซ้ำ '+updated+' วัน');
 }
 $('btnAddCustomerDistance').onclick=()=>addCD();$('fabImportCustomers').onclick=()=>{closeFabMenu();$('pBulkCustomers').value='';$('bulkCustomerModal').classList.add('open');setTimeout(()=>$('pBulkCustomers').focus(),50)};$('bulkClose').onclick=()=> $('bulkCustomerModal').classList.remove('open');$('btnApplyBulkCustomers').onclick=bulkCustomers;
-/* ---------------- Shared sync connection ---------------- */
-function b64urlEncode_(value){
-  const bytes=new TextEncoder().encode(String(value||''));let bin='';bytes.forEach(b=>bin+=String.fromCharCode(b));
-  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-function b64urlDecode_(value){
-  let v=String(value||'').replace(/-/g,'+').replace(/_/g,'/');while(v.length%4)v+='=';
-  const bin=atob(v),bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));return new TextDecoder().decode(bytes);
-}
-function makeSharedSyncLink_(){
-  const token=($('pSyncToken').value||'').trim(),url=($('pExportUrl').value||'').trim();
-  if(!token){alert('กรุณากรอก SYNC_SECRET ก่อนสร้างลิงก์');return '';}
-  try{validatedAppsScriptExecUrl(url);}catch(err){alert(err.message||err);return '';}
-  return location.href.split('#')[0]+'#sync='+b64urlEncode_(JSON.stringify({v:1,url:url,token:token}));
-}
-async function copySharedSyncLink_(){
-  const link=makeSharedSyncLink_();if(!link)return;
-  try{await navigator.clipboard.writeText(link);toast('คัดลอกลิงก์เชื่อมต่อแล้ว');}
-  catch(_){prompt('คัดลอกลิงก์นี้ไปเปิดบนอุปกรณ์อื่น',link);}
-}
-function readSharedSyncConfig_(){
-  const m=location.hash.match(/(?:^#|&)sync=([^&]+)/);if(!m)return null;
-  try{
-    const cfg=JSON.parse(b64urlDecode_(decodeURIComponent(m[1])));
-    if(!cfg||cfg.v!==1||!cfg.token)throw new Error('ข้อมูลเชื่อมต่อไม่ครบ');
-    validatedAppsScriptExecUrl(cfg.url);
-    localStorage.setItem('gasoline_sync_token',String(cfg.token).trim());
-    localStorage.setItem('gasoline_sync_url',String(cfg.url).trim());
-    history.replaceState(null,'',location.href.split('#')[0]);
-    return cfg;
-  }catch(err){console.error(err);alert('ลิงก์เชื่อมต่อไม่ถูกต้อง: '+(err.message||err));return null;}
-}
-const _sharedSyncConfig=readSharedSyncConfig_();
 /* ---------------- Profile modal ---------------- */
 function openProfile(){
   $('pCompany').value=profile.company;$('pName').value=profile.name;$('pCode').value=profile.code;
@@ -1636,9 +1617,9 @@ function openProfile(){
   $('profileModal').classList.add('open');
 }
 $('btnProfile').addEventListener('click',()=>{closeFabMenu();openProfile();});
+$('pCode').addEventListener('input',function(){this.value=String(this.value||'').toUpperCase();});
 $('pCancel').addEventListener('click',()=>$('profileModal').classList.remove('open'));
 $('pClose').addEventListener('click',()=>$('profileModal').classList.remove('open'));
-$('btnShareSync').addEventListener('click',copySharedSyncLink_);
 $('btnBackup').addEventListener('click',()=>{
   syncActiveBack();
   const data={v:2,ts:Date.now(),employees,gset,activeEmpId};
@@ -1667,7 +1648,7 @@ $('restoreInput').addEventListener('change',async e=>{
   }catch(err){alert('กู้คืนไม่สำเร็จ: '+(err.message||err));}
 });
 $('pSave').addEventListener('click',async()=>{
-  profile.company=$('pCompany').value.trim();profile.name=$('pName').value.trim();profile.code=$('pCode').value.trim();
+  profile.company=$('pCompany').value.trim();profile.name=$('pName').value.trim();profile.code=String($('pCode').value||'').trim().toUpperCase();$('pCode').value=profile.code;
   profile.zone=$('pZone').value.trim();profile.plate=$('pPlate').value.trim();profile.currency=$('pCur').value.trim()||'THB';
   profile.fix=parseFloat($('pFix').value)||0;profile.fixDate=$('pFixDate').value||'';profile.docNo=parseInt($('pDoc').value)||1;
   profile.approve=$('pApprove').value.trim();profile.verify=$('pVerify').value.trim();
@@ -1822,19 +1803,21 @@ $('empSelect').addEventListener('change',e=>switchEmp(e.target.value));
 $('btnAddEmp').addEventListener('click',addEmp);
 $('btnEditEmp').addEventListener('click',openProfile);
 $('btnRenameMonth').addEventListener('click',async()=>{
+  if(!cur){toast('ยังไม่มีข้อมูลเดือน กรุณาสร้างเดือนใหม่ก่อน');return;}
   const name=prompt('เปลี่ยนชื่อเดือนนี้',cur.label);if(name===null)return;
   cur.label=name.trim()||cur.label;await saveMonths();render();toast('เปลี่ยนชื่อเดือนแล้ว');
 });
 $('btnNewMonth').addEventListener('click',async()=>{
   const label=prompt('ชื่อเดือนใหม่ (เช่น May26)',defaultMonthLabel());if(label===null)return;
-  const fromLabel=cur.label;
-  const nm=newMonthObj(label.trim()||defaultMonthLabel(),cur);
+  const prev=cur||null,fromLabel=prev?prev.label:'';
+  const nm=newMonthObj(label.trim()||defaultMonthLabel(),prev);
   months[nm.id]=nm;monthOrder.push(nm.id);cur=nm;await saveMonths();await saveCur();render();
-  toast(`สร้างเดือนใหม่ · ดึง Balance/Reimbursement จาก "${fromLabel}" แล้ว`);
+  toast(prev?`สร้างเดือนใหม่ · ดึง Balance/Reimbursement จาก "${fromLabel}" แล้ว`:'สร้างเดือนแรกสำหรับพนักงานแล้ว');
 });
 
 /* ---------------- Close month / purge receipts ---------------- */
 $('btnCloseMonth').addEventListener('click',async()=>{
+  if(!cur){toast('ยังไม่มีข้อมูลเดือน กรุณาสร้างเดือนใหม่ก่อน');return;}
   const rs=await rcptByMonth(cur.id);
   if(!rs.length){toast('ไม่มีใบเสร็จให้ลบ');return;}
   if(!confirm(`ลบไฟล์ใบเสร็จ ${rs.length} ไฟล์ของเดือน "${cur.label}" ออกจากเครื่อง?\nข้อมูลตัวเลขในตารางจะยังอยู่ครบ\n(แนะนำให้ Export PDF เก็บไว้ก่อน)`))return;
@@ -2263,7 +2246,7 @@ $('btnExportSheet').addEventListener('click',gsExport);
 function gsReady(){return (profile.exportUrl||'').indexOf('http')===0;}
 // จับคู่พนักงานข้ามเครื่องด้วย "รหัสพนักงาน" (ถ้าไม่มีรหัส ใช้ id) — กัน id สุ่มไม่ตรงกัน
 function empKey(e){const p=(e&&e.prof)||{};const c=String(p.code||'').trim().toLowerCase();if(c)return 'code:'+c;const nm=String(p.name||'').trim().toLowerCase();if(nm)return 'name:'+nm;return 'id:'+((e&&e.id)||'');}
-function employeeSheetName(e){const p=(e&&e.prof)||{},name=String(p.name||'').trim(),code=String(p.code||'').trim();return code?(name+' ('+code+')'):name;}
+function employeeSheetName(e){const p=(e&&e.prof)||{},name=String(p.name||'').trim(),code=String(p.code||'').trim().toUpperCase();return code?(name+' ('+code+')'):name;}
 function normalizedSheetName(v){return String(v||'').trim().replace(/\s+/g,' ').toLowerCase();}
 function uniqueEmployeesByCode(list){const by={};(list||[]).forEach(e=>{const key=empKey(e),existing=by[key];by[key]=existing?mergeEmployee(existing,e):e;});return Object.keys(by).map(k=>by[k]);}
 function reconcileEmployeesWithSheetTabs(list,tabs){const unique=uniqueEmployeesByCode(list);if(!Array.isArray(tabs)||!tabs.length)return unique;const allowed=new Set(tabs.filter(n=>String(n)!=='_sync').map(normalizedSheetName));const matched=unique.filter(e=>allowed.has(normalizedSheetName(employeeSheetName(e))));return matched.length?matched:unique;}
@@ -2434,15 +2417,9 @@ $('zoom').addEventListener('click',()=>$('zoom').classList.remove('open'));
 /* ---------------- init ---------------- */
 i18nRemember(); applyLanguage(appLang);
 (async function(){
-  try{await load();
-    const sharedUrl=(_sharedSyncConfig&&_sharedSyncConfig.url)||localStorage.getItem('gasoline_sync_url')||'';
-    if(sharedUrl){
-      try{validatedAppsScriptExecUrl(sharedUrl);profile.exportUrl=sharedUrl;gset.exportUrl=sharedUrl;await saveDB();}
-      catch(err){console.error(err);}
-    }
-    render();
+  try{await load();render();
     _ready=true;
-    if(gsReady()&&localStorage.getItem('gasoline_sync_token'))gsSyncPull(true);                 // ดึงข้อมูลล่าสุดอัตโนมัติตอนเปิด (เงียบ)
+    if(gsReady())gsSyncPull(true);                 // ดึงข้อมูลล่าสุดอัตโนมัติตอนเปิด (เงียบ)
     document.addEventListener('visibilitychange',()=>{
       if(!gsReady())return;
       if(document.visibilityState==='visible')gsSyncPull(true);   // กลับเข้าแอป → ดึงล่าสุด
